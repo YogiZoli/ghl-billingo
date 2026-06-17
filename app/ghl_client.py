@@ -14,6 +14,7 @@ them, update the paths here only.
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 import requests
 
@@ -28,7 +29,7 @@ class GHLError(RuntimeError):
 class GHLClient:
     def __init__(
         self,
-        pit_token: str,
+        pit_token: str | None,
         location_id: str,
         base_url: str = "https://services.leadconnectorhq.com",
         api_version: str = "2021-07-28",
@@ -36,24 +37,38 @@ class GHLClient:
         timeout: int = DEFAULT_TIMEOUT,
         max_retries: int = MAX_RETRIES,
         sleep=time.sleep,
+        token_provider: Callable[[], str] | None = None,
     ) -> None:
+        """A token can come from a fixed PIT (``pit_token``) or, for OAuth
+        sub-accounts, a zero-arg ``token_provider`` (see
+        ``app.ghl_oauth.TokenManager.token_provider``) that is called before
+        every request so a freshly-minted/rotated token is always used —
+        location tokens last ~24h and must be re-minted, not just retried.
+        Exactly one of the two should be supplied.
+        """
+        if not pit_token and token_provider is None:
+            raise GHLError("GHLClient needs either pit_token or token_provider")
         self.base_url = base_url.rstrip("/")
         self.location_id = location_id
         self.timeout = timeout
         self.max_retries = max_retries
         self._sleep = sleep
+        self._token_provider = token_provider
         self.session = session or requests.Session()
         self.session.headers.update(
             {
-                "Authorization": f"Bearer {pit_token}",
                 "Version": api_version,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }
         )
+        if pit_token:
+            self.session.headers["Authorization"] = f"Bearer {pit_token}"
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
         url = f"{self.base_url}{path}"
+        if self._token_provider is not None:
+            self.session.headers["Authorization"] = f"Bearer {self._token_provider()}"
         backoff = 1.0
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):

@@ -58,6 +58,20 @@ def cmd_gen_key(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_oauth_authorize_url(_: argparse.Namespace) -> int:
+    """Print the one-time install link an agency admin clicks to authorize
+    the app. No network call — pure URL construction from env vars."""
+    from .ghl_oauth import OAuthError, build_authorize_url, load_oauth_settings
+
+    try:
+        settings = load_oauth_settings()
+        print(build_authorize_url(settings))
+        return 0
+    except OAuthError as exc:
+        print(f"OAuth not configured: {exc}", file=sys.stderr)
+        return 2
+
+
 def _build_ghl(cfg):
     from .ghl_client import GHLClient
 
@@ -147,6 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("gen-key", help="print a fresh Fernet key").set_defaults(func=cmd_gen_key)
+    sub.add_parser(
+        "oauth-authorize-url", help="print the one-time agency OAuth install link"
+    ).set_defaults(func=cmd_oauth_authorize_url)
     sub.add_parser("poll", help="one live Billingo poll").set_defaults(func=cmd_poll)
     sub.add_parser("run-scheduler", help="apply due review tags").set_defaults(
         func=cmd_run_scheduler

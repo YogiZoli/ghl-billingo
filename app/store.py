@@ -35,6 +35,41 @@ CREATE TABLE IF NOT EXISTS review_queue (
     applied_at    TEXT,
     UNIQUE(location_id, invoice_id)
 );
+
+-- OAuth / multi-tenant (Session 3: Agency OAuth app, zero-touch onboarding).
+
+-- One row per agency Company-level token. We only ever install the app once
+-- per agency, but keyed by company_id so a re-install doesn't collide.
+CREATE TABLE IF NOT EXISTS oauth_company_token (
+    company_id          TEXT PRIMARY KEY,
+    access_token_enc    TEXT NOT NULL,
+    refresh_token_enc   TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,   -- ISO 8601 UTC
+    scope               TEXT,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Short-lived (~24h) location-scoped tokens, minted on demand from the
+-- agency token via POST /oauth/locationToken. No refresh_token here — when
+-- expired we just mint a new one.
+CREATE TABLE IF NOT EXISTS oauth_location_tokens (
+    location_id      TEXT PRIMARY KEY,
+    company_id       TEXT NOT NULL,
+    access_token_enc TEXT NOT NULL,
+    expires_at       TEXT NOT NULL,      -- ISO 8601 UTC
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Tenant registry, driven by the INSTALL / UNINSTALL marketplace webhook.
+-- A location only gets polled/scheduled once it shows up here as active.
+CREATE TABLE IF NOT EXISTS tenants (
+    location_id   TEXT PRIMARY KEY,
+    company_id    TEXT NOT NULL,
+    install_type  TEXT,                  -- e.g. "Location" | "Company"
+    active        INTEGER NOT NULL DEFAULT 1,
+    installed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -138,6 +173,111 @@ class Store:
             (location_id,),
         ).fetchone()
         return int(row["n"])
+
+    # -- OAuth: agency Company token ------------------------------------
+    def save_company_token(
+        self,
+        company_id: str,
+        access_token_enc: str,
+        refresh_token_enc: str,
+        expires_at: str,
+        scope: str | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO oauth_company_token
+                    (company_id, access_token_enc, refresh_token_enc, expires_at, scope, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(company_id) DO UPDATE SET
+                    access_token_enc = excluded.access_token_enc,
+                    refresh_token_enc = excluded.refresh_token_enc,
+                    expires_at = excluded.expires_at,
+                    scope = excluded.scope,
+                    updated_at = datetime('now')
+                """,
+                (company_id, access_token_enc, refresh_token_enc, expires_at, scope),
+            )
+
+    def get_company_token(self, company_id: str | None = None) -> sqlite3.Row | None:
+        """Return the stored agency token row.
+
+        If ``company_id`` is omitted, return the single row we have (there is
+        normally exactly one agency per install) — used by the scheduler
+        loop, which doesn't always know the company_id up front.
+        """
+        if company_id:
+            return self._conn.execute(
+                "SELECT * FROM oauth_company_token WHERE company_id = ?",
+                (company_id,),
+            ).fetchone()
+        return self._conn.execute(
+            "SELECT * FROM oauth_company_token ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+
+    # -- OAuth: ephemeral location tokens -------------------------------
+    def save_location_token(
+        self, location_id: str, company_id: str, access_token_enc: str, expires_at: str
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO oauth_location_tokens
+                    (location_id, company_id, access_token_enc, expires_at, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(location_id) DO UPDATE SET
+                    company_id = excluded.company_id,
+                    access_token_enc = excluded.access_token_enc,
+                    expires_at = excluded.expires_at,
+                    updated_at = datetime('now')
+                """,
+                (location_id, company_id, access_token_enc, expires_at),
+            )
+
+    def get_location_token(self, location_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM oauth_location_tokens WHERE location_id = ?",
+            (location_id,),
+        ).fetchone()
+
+    # -- tenant registry (INSTALL / UNINSTALL webhook) -------------------
+    def upsert_tenant(
+        self,
+        location_id: str,
+        company_id: str,
+        install_type: str | None = None,
+        active: bool = True,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO tenants (location_id, company_id, install_type, active, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(location_id) DO UPDATE SET
+                    company_id = excluded.company_id,
+                    install_type = excluded.install_type,
+                    active = excluded.active,
+                    updated_at = datetime('now')
+                """,
+                (location_id, company_id, install_type, 1 if active else 0),
+            )
+
+    def deactivate_tenant(self, location_id: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE tenants SET active = 0, updated_at = datetime('now') WHERE location_id = ?",
+                (location_id,),
+            )
+
+    def get_tenant(self, location_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM tenants WHERE location_id = ?", (location_id,)
+        ).fetchone()
+
+    def list_active_tenants(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM tenants WHERE active = 1 ORDER BY location_id"
+        ).fetchall()
 
     def close(self) -> None:
         self._conn.close()

@@ -139,3 +139,32 @@ def test_get_location_custom_values_maps_name_to_value():
     values = client.get_location_custom_values()
     assert values["billingo_api_key"] == "abc123"
     assert values["billingo_delay_days"] == "2"
+
+
+def test_requires_pit_token_or_token_provider():
+    import pytest
+
+    from app.ghl_client import GHLError
+
+    with pytest.raises(GHLError):
+        GHLClient(None, "LOC1", base_url=BASE)
+
+
+@responses.activate
+def test_token_provider_is_called_before_each_request():
+    calls = {"n": 0}
+
+    def provider():
+        calls["n"] += 1
+        return f"fresh-token-{calls['n']}"
+
+    responses.add(responses.POST, f"{BASE}/contacts/abc/tags", json={}, status=200)
+    client = GHLClient(None, "LOC1", base_url=BASE, token_provider=provider, sleep=lambda _s: None)
+    client.add_tags("abc", ["customer"])
+    assert calls["n"] == 1
+    assert responses.calls[0].request.headers["Authorization"] == "Bearer fresh-token-1"
+
+    responses.add(responses.POST, f"{BASE}/contacts/abc/tags", json={}, status=200)
+    client.add_tags("abc", ["customer"])
+    assert calls["n"] == 2
+    assert responses.calls[1].request.headers["Authorization"] == "Bearer fresh-token-2"
