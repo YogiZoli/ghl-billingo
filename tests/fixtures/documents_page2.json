@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "id": 1000,
+      "invoice_number": "VOX-2026-1000",
+      "type": "invoice",
+      "cancelled": false,
+      "invoice_date": "2026-06-01",
+      "fulfillment_date": "2026-06-01",
+      "due_date": "2026-06-08",
+      "partner": { "id": 506, "name": "Existing Customer", "emails": ["existing@example.hu"], "phone": "+36302222222" }
+    }
+  ],
+  "total": 6,
+  "per_page": 5,
+  "current_page": 2
+}

@@ -1,0 +1,53 @@
+{
+  "data": [
+    {
+      "id": 1005,
+      "invoice_number": "VOX-2026-1005",
+      "type": "invoice",
+      "cancelled": false,
+      "invoice_date": "2026-06-10",
+      "fulfillment_date": "2026-06-10",
+      "due_date": "2026-06-17",
+      "partner": { "id": 501, "name": "Anna Kovacs", "emails": ["anna@example.hu"], "phone": "+36301111111" }
+    },
+    {
+      "id": 1004,
+      "invoice_number": "VOX-2026-PRO-04",
+      "type": "proforma",
+      "cancelled": false,
+      "invoice_date": "2026-06-11",
+      "fulfillment_date": "2026-06-11",
+      "partner": { "id": 502, "name": "Proforma Only", "emails": ["pro@example.hu"] }
+    },
+    {
+      "id": 1003,
+      "invoice_number": "VOX-2026-1003",
+      "type": "invoice",
+      "cancelled": true,
+      "invoice_date": "2026-06-09",
+      "fulfillment_date": "2026-06-09",
+      "partner": { "id": 503, "name": "Cancelled Co", "emails": ["void@example.hu"] }
+    },
+    {
+      "id": 1002,
+      "invoice_number": "VOX-2026-1002",
+      "type": "invoice",
+      "cancelled": false,
+      "invoice_date": "2026-06-12",
+      "fulfillment_date": null,
+      "partner": { "id": 504, "name": "Bela Nagy", "email": "bela@example.hu" }
+    },
+    {
+      "id": 1001,
+      "invoice_number": "VOX-2026-1001",
+      "type": "receipt",
+      "cancelled": false,
+      "invoice_date": "2026-06-15",
+      "fulfillment_date": "2026-06-15",
+      "partner": { "id": 505, "name": "Cili Toth", "emails": ["cili@example.hu"] }
+    }
+  ],
+  "total": 6,
+  "per_page": 5,
+  "current_page": 1
+}
