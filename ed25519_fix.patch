@@ -1,0 +1,215 @@
+diff --git a/app/ghl_oauth.py b/app/ghl_oauth.py
+index 3a414af..9a49e1f 100644
+--- a/app/ghl_oauth.py
++++ b/app/ghl_oauth.py
+@@ -269,14 +269,59 @@ class TokenManager:
+         return lambda: self.get_location_token(location_id, company_id)
+ 
+ 
++# GHL's own published webhook-signing public keys (Webhook Integration
++# Guide, "Security: Verifying Webhook Authenticity"). These are PUBLIC keys
++# -- identical for every Marketplace app, not a per-app secret -- so they
++# are hardcoded here rather than pulled from an env var. The legacy RSA
++# scheme (X-WH-Signature) is deprecated by GHL on 2026-07-01; after that
++# date only the Ed25519 scheme (X-GHL-Signature) is signed, so we verify
++# Ed25519 first and fall back to RSA only while both are live.
++_GHL_ED25519_PUBLIC_KEY_PEM = (
++    "-----BEGIN PUBLIC KEY-----\n"
++    "MCowBQYDK2VwAyEAi2HR1srL4o18O8BRa7gVJY7G7bupbN3H9AwJrHCDiOg=\n"
++    "-----END PUBLIC KEY-----\n"
++)
++
++_GHL_LEGACY_RSA_PUBLIC_KEY_PEM = (
++    "-----BEGIN PUBLIC KEY-----\n"
++    "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAokvo/r9tVgcfZ5DysOSC\n"
++    "Frm602qYV0MaAiNnX9O8KxMbiyRKWeL9JpCpVpt4XHIcBOK4u3cLSqJGOLaPuXw6\n"
++    "dO0t6Q/ZVdAV5Phz+ZtzPL16iCGeK9po6D6JHBpbi989mmzMryUnQJezlYJ3DVfB\n"
++    "csedpinheNnyYeFXolrJvcsjDtfAeRx5ByHQmTnSdFUzuAnC9/GepgLT9SM4nCpv\n"
++    "uxmZMxrJt5Rw+VUaQ9B8JSvbMPpez4peKaJPZHBbU3OdeCVx5klVXXZQGNHOs8gF\n"
++    "3kvoV5rTnXV0IknLBXlcKKAQLZcY/Q9rG6Ifi9c+5vqlvHPCUJFT5XUGG5RKgOKU\n"
++    "J062fRtN+rLYZUV+BjafxQauvC8wSWeYja63VSUruvmNj8xkx2zE/Juc+yjLjTXp\n"
++    "IocmaiFeAO6fUtNjDeFVkhf5LNb59vECyrHD2SQIrhgXpO4Q3dVNA5rw576PwTzN\n"
++    "h/AMfHKIjE4xQA1SZuYJmNnmVZLIZBlQAF9Ntd03rfadZ+yDiOXCCs9FkHibELhC\n"
++    "HULgCsnuDJHcrGNd5/Ddm5hxGQ0ASitgHeMZ0kcIOwKDOzOU53lDza6/Y09T7sYJ\n"
++    "PQe7z0cvj7aE4B+Ax1ZoZGPzpJlZtGXCsu9aTEGEnKzmsFqwcSsnw3JB31IGKAyk\n"
++    "T1hhTiaCeIY/OwwwNUY2yvcCAwEAAQ==\n"
++    "-----END PUBLIC KEY-----\n"
++)
++
++
++def _verify_ed25519(raw_body: bytes, signature_b64: str, public_key_pem: str) -> bool:
++    import base64
++
++    from cryptography.exceptions import InvalidSignature
++    from cryptography.hazmat.primitives.serialization import load_pem_public_key
++
++    try:
++        public_key = load_pem_public_key(public_key_pem.encode())
++        signature = base64.b64decode(signature_b64)
++        public_key.verify(signature, raw_body)
++        return True
++    except (InvalidSignature, ValueError, TypeError) as exc:
++        log.warning("webhook Ed25519 (X-GHL-Signature) verification failed: %s", exc)
++        return False
++
++
+ def verify_webhook_signature(raw_body: bytes, signature_b64: str, public_key_pem: str) -> bool:
+-    """Verify a marketplace INSTALL/UNINSTALL webhook came from GHL.
++    """Verify a marketplace INSTALL/UNINSTALL webhook signed RSA-SHA256.
+ 
+-    GHL signs these payloads RSA-SHA256 over the raw body; the signature
+-    arrives base64-encoded in the ``x-wh-signature`` header. The public key
+-    is shown once in the Marketplace app's settings page and should be
+-    stored as ``GHL_WEBHOOK_PUBLIC_KEY`` (PEM, including header/footer
+-    lines — ``\\n`` is fine if it comes from a single-line env var).
++    This is GHL's legacy scheme (X-WH-Signature), deprecated 2026-07-01.
++    Kept for backward compatibility during the transition window; prefer
++    ``verify_marketplace_webhook`` for new code.
+     """
+     import base64
+ 
+@@ -293,3 +338,24 @@ def verify_webhook_signature(raw_body: bytes, signature_b64: str, public_key_pem: str) -> bool:
+     except (InvalidSignature, ValueError, TypeError) as exc:
+         log.warning("webhook signature verification failed: %s", exc)
+         return False
++
++
++def verify_marketplace_webhook(raw_body: bytes, headers) -> bool:
++    """Verify a marketplace INSTALL/UNINSTALL webhook using whichever of
++    GHL's two signing schemes is present, preferring the current one.
++
++    ``headers`` only needs to support ``.get(name, default)`` (e.g. a
++    starlette/fastapi ``Headers`` object or a plain dict). Returns
++    ``False`` if neither signature header is present -- callers that want
++    to allow unsigned requests (e.g. local dev) should check that case
++    explicitly before calling this.
++    """
++    ghl_sig = headers.get("x-ghl-signature", "")
++    if ghl_sig:
++        return _verify_ed25519(raw_body, ghl_sig, _GHL_ED25519_PUBLIC_KEY_PEM)
++
++    legacy_sig = headers.get("x-wh-signature", "")
++    if legacy_sig:
++        return verify_webhook_signature(raw_body, legacy_sig, _GHL_LEGACY_RSA_PUBLIC_KEY_PEM)
++
++    return False
+diff --git a/app/runner.py b/app/runner.py
+index fc8c99a..0c62d7e 100644
+--- a/app/runner.py
++++ b/app/runner.py
+@@ -253,19 +253,16 @@ async def ghl_webhook(request: Request):
+     authorization above.
+ 
+     Expected payload (per GHL docs): {type, appId, locationId, companyId,
+-    installType, timestamp, webhookId}. If ``GHL_WEBHOOK_PUBLIC_KEY`` is set
+-    we verify the ``x-wh-signature`` header before trusting the body.
++    installType, timestamp, webhookId}. Signature is verified against GHL's
++    own published public keys -- prefers the current Ed25519 scheme
++    (``x-ghl-signature``), falling back to the legacy RSA scheme
++    (``x-wh-signature``) which GHL deprecates on 2026-07-01.
+     """
+     raw_body = await request.body()
+-    public_key_pem = os.getenv("GHL_WEBHOOK_PUBLIC_KEY", "")
+-    if public_key_pem:
+-        from .ghl_oauth import verify_webhook_signature
++    from .ghl_oauth import verify_marketplace_webhook
+ 
+-        signature = request.headers.get("x-wh-signature", "")
+-        if not verify_webhook_signature(raw_body, signature, public_key_pem):
+-            return JSONResponse({"error": "invalid signature"}, status_code=401)
+-    else:
+-        log.warning("GHL_WEBHOOK_PUBLIC_KEY not set — accepting webhook UNVERIFIED")
++    if not verify_marketplace_webhook(raw_body, request.headers):
++        return JSONResponse({"error": "invalid signature"}, status_code=401)
+ 
+     payload = await request.json()
+     event_type = (payload.get("type") or "").upper()
+diff --git a/tests/test_ghl_oauth.py b/tests/test_ghl_oauth.py
+index dbbc9c2..9eb02f8 100644
+--- a/tests/test_ghl_oauth.py
++++ b/tests/test_ghl_oauth.py
+@@ -14,6 +14,7 @@ from app.ghl_oauth import (
+     OAuthSettings,
+     TokenManager,
+     build_authorize_url,
++    verify_marketplace_webhook,
+     verify_webhook_signature,
+ )
+ from app.store import Store
+@@ -211,3 +212,76 @@ def test_verify_webhook_signature_accepts_valid_and_rejects_tampered():
+     assert verify_webhook_signature(body, sig_b64, public_pem) is True
+     assert verify_webhook_signature(body + b"tampered", sig_b64, public_pem) is False
+     assert verify_webhook_signature(body, "not-a-real-signature", public_pem) is False
++
++
++# -- webhook signature verification (Ed25519 + dual-scheme dispatch) ------
++def _ed25519_keypair():
++    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
++
++    private_key = Ed25519PrivateKey.generate()
++    public_pem = private_key.public_key().public_bytes(
++        encoding=serialization.Encoding.PEM,
++        format=serialization.PublicFormat.SubjectPublicKeyInfo,
++    ).decode()
++    return private_key, public_pem
++
++
++def test_verify_marketplace_webhook_accepts_valid_ed25519_signature(monkeypatch):
++    private_key, public_pem = _ed25519_keypair()
++    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
++    signature = private_key.sign(body)
++    sig_b64 = base64.b64encode(signature).decode()
++
++    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", public_pem)
++    assert verify_marketplace_webhook(body, {"x-ghl-signature": sig_b64}) is True
++
++
++def test_verify_marketplace_webhook_rejects_tampered_ed25519_body(monkeypatch):
++    private_key, public_pem = _ed25519_keypair()
++    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
++    signature = private_key.sign(body)
++    sig_b64 = base64.b64encode(signature).decode()
++
++    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", public_pem)
++    assert verify_marketplace_webhook(body + b"tampered", {"x-ghl-signature": sig_b64}) is False
++
++
++def test_verify_marketplace_webhook_falls_back_to_legacy_rsa(monkeypatch):
++    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
++    public_pem = private_key.public_key().public_bytes(
++        encoding=serialization.Encoding.PEM,
++        format=serialization.PublicFormat.SubjectPublicKeyInfo,
++    ).decode()
++
++    body = b'{"type":"UNINSTALL","locationId":"LOC1","companyId":"COMP1"}'
++    signature = private_key.sign(body, padding.PKCS1v15(), hashes.SHA256())
++    sig_b64 = base64.b64encode(signature).decode()
++
++    monkeypatch.setattr("app.ghl_oauth._GHL_LEGACY_RSA_PUBLIC_KEY_PEM", public_pem)
++    # no x-ghl-signature present -> must use legacy x-wh-signature path
++    assert verify_marketplace_webhook(body, {"x-wh-signature": sig_b64}) is True
++
++
++def test_verify_marketplace_webhook_prefers_ed25519_over_legacy(monkeypatch):
++    ed_private, ed_public_pem = _ed25519_keypair()
++    rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
++    rsa_public_pem = rsa_private.public_key().public_bytes(
++        encoding=serialization.Encoding.PEM,
++        format=serialization.PublicFormat.SubjectPublicKeyInfo,
++    ).decode()
++
++    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
++    ed_sig = base64.b64encode(ed_private.sign(body)).decode()
++    # deliberately bogus legacy signature -- should be ignored since the
++    # Ed25519 header takes priority
++    bogus_legacy_sig = base64.b64encode(b"not-a-real-signature").decode()
++
++    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", ed_public_pem)
++    monkeypatch.setattr("app.ghl_oauth._GHL_LEGACY_RSA_PUBLIC_KEY_PEM", rsa_public_pem)
++    headers = {"x-ghl-signature": ed_sig, "x-wh-signature": bogus_legacy_sig}
++    assert verify_marketplace_webhook(body, headers) is True
++
++
++def test_verify_marketplace_webhook_rejects_when_no_signature_header():
++    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
++    assert verify_marketplace_webhook(body, {}) is False

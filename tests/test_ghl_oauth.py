@@ -14,6 +14,7 @@ from app.ghl_oauth import (
     OAuthSettings,
     TokenManager,
     build_authorize_url,
+    verify_marketplace_webhook,
     verify_webhook_signature,
 )
 from app.store import Store
@@ -211,3 +212,76 @@ def test_verify_webhook_signature_accepts_valid_and_rejects_tampered():
     assert verify_webhook_signature(body, sig_b64, public_pem) is True
     assert verify_webhook_signature(body + b"tampered", sig_b64, public_pem) is False
     assert verify_webhook_signature(body, "not-a-real-signature", public_pem) is False
+
+
+# -- webhook signature verification (Ed25519 + dual-scheme dispatch) ------
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    return private_key, public_pem
+
+
+def test_verify_marketplace_webhook_accepts_valid_ed25519_signature(monkeypatch):
+    private_key, public_pem = _ed25519_keypair()
+    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
+    signature = private_key.sign(body)
+    sig_b64 = base64.b64encode(signature).decode()
+
+    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", public_pem)
+    assert verify_marketplace_webhook(body, {"x-ghl-signature": sig_b64}) is True
+
+
+def test_verify_marketplace_webhook_rejects_tampered_ed25519_body(monkeypatch):
+    private_key, public_pem = _ed25519_keypair()
+    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
+    signature = private_key.sign(body)
+    sig_b64 = base64.b64encode(signature).decode()
+
+    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", public_pem)
+    assert verify_marketplace_webhook(body + b"tampered", {"x-ghl-signature": sig_b64}) is False
+
+
+def test_verify_marketplace_webhook_falls_back_to_legacy_rsa(monkeypatch):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    body = b'{"type":"UNINSTALL","locationId":"LOC1","companyId":"COMP1"}'
+    signature = private_key.sign(body, padding.PKCS1v15(), hashes.SHA256())
+    sig_b64 = base64.b64encode(signature).decode()
+
+    monkeypatch.setattr("app.ghl_oauth._GHL_LEGACY_RSA_PUBLIC_KEY_PEM", public_pem)
+    # no x-ghl-signature present -> must use legacy x-wh-signature path
+    assert verify_marketplace_webhook(body, {"x-wh-signature": sig_b64}) is True
+
+
+def test_verify_marketplace_webhook_prefers_ed25519_over_legacy(monkeypatch):
+    ed_private, ed_public_pem = _ed25519_keypair()
+    rsa_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    rsa_public_pem = rsa_private.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
+    ed_sig = base64.b64encode(ed_private.sign(body)).decode()
+    # deliberately bogus legacy signature -- should be ignored since the
+    # Ed25519 header takes priority
+    bogus_legacy_sig = base64.b64encode(b"not-a-real-signature").decode()
+
+    monkeypatch.setattr("app.ghl_oauth._GHL_ED25519_PUBLIC_KEY_PEM", ed_public_pem)
+    monkeypatch.setattr("app.ghl_oauth._GHL_LEGACY_RSA_PUBLIC_KEY_PEM", rsa_public_pem)
+    headers = {"x-ghl-signature": ed_sig, "x-wh-signature": bogus_legacy_sig}
+    assert verify_marketplace_webhook(body, headers) is True
+
+
+def test_verify_marketplace_webhook_rejects_when_no_signature_header():
+    body = b'{"type":"INSTALL","locationId":"LOC1","companyId":"COMP1"}'
+    assert verify_marketplace_webhook(body, {}) is False

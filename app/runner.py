@@ -253,19 +253,16 @@ async def ghl_webhook(request: Request):
     authorization above.
 
     Expected payload (per GHL docs): {type, appId, locationId, companyId,
-    installType, timestamp, webhookId}. If ``GHL_WEBHOOK_PUBLIC_KEY`` is set
-    we verify the ``x-wh-signature`` header before trusting the body.
+    installType, timestamp, webhookId}. Signature is verified against GHL's
+    own published public keys -- prefers the current Ed25519 scheme
+    (``x-ghl-signature``), falling back to the legacy RSA scheme
+    (``x-wh-signature``) which GHL deprecates on 2026-07-01.
     """
     raw_body = await request.body()
-    public_key_pem = os.getenv("GHL_WEBHOOK_PUBLIC_KEY", "")
-    if public_key_pem:
-        from .ghl_oauth import verify_webhook_signature
+    from .ghl_oauth import verify_marketplace_webhook
 
-        signature = request.headers.get("x-wh-signature", "")
-        if not verify_webhook_signature(raw_body, signature, public_key_pem):
-            return JSONResponse({"error": "invalid signature"}, status_code=401)
-    else:
-        log.warning("GHL_WEBHOOK_PUBLIC_KEY not set — accepting webhook UNVERIFIED")
+    if not verify_marketplace_webhook(raw_body, request.headers):
+        return JSONResponse({"error": "invalid signature"}, status_code=401)
 
     payload = await request.json()
     event_type = (payload.get("type") or "").upper()
