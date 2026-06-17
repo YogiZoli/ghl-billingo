@@ -5,9 +5,11 @@ SMB issues an invoice in their own Billingo account, the matching GoHighLevel
 contact is automatically dropped into the existing Google-review automation a
 configurable number of days after the fulfillment date.
 
-> Status: **Session 1 — engine scaffold.** Billingo client + poller + scheduler
-> control-flow + full test suite + a network-free `dry-run`. Live GHL wiring
-> hardening and the live Billingo end-to-end test land in Session 2/3.
+> Status: **Session 2 — live GHL write path hardened.** Billingo client + poller
+> + scheduler with the full edge-case set (contact email→phone match,
+> create-on-missing, repeat-customer retag, GHL 429/5xx retry) and per-subaccount
+> settings read from GHL Custom Values. 37 tests green + a network-free `dry-run`.
+> The live Billingo end-to-end test lands in Session 3 (needs a real Billingo key).
 
 ## How it works
 
@@ -60,15 +62,23 @@ tag logic (add / retag / no-op). No network or credentials required.
 
 All behaviour is set via `.env` — see `.env.example`. Key knobs:
 `ANCHOR_DATE`, `DELAY_DAYS`, `POLL_INTERVAL_MIN`, `REVIEW_ENTRY_TAG`,
-`RETAG_IF_PRESENT`.
+`RETAG_IF_PRESENT`, `CREATE_CONTACT_IF_MISSING`.
+
+In production the per-subaccount values come from **GHL Custom Values** (the
+locked onboarding model): `billingo_api_key`, `billingo_delay_days`, and
+`billingo_poll_min`. The connector reads them at run time (`get_location_custom_values`)
+and they override the `.env` defaults — so Mate manages a client entirely from
+the GHL UI, no redeploy. A blank `billingo_api_key` simply means that
+subaccount is inactive.
 
 ## Layout
 
 ```
 app/
-  config.py          tenant config (env now; per-subaccount rows in Phase 2)
+  config.py          tenant config (env defaults; per-subaccount rows in Phase 2)
+  ghl_config.py      overlay GHL Custom Values (api key + timing) onto config
   billingo_client.py X-API-KEY client, pagination, 429 backoff
-  ghl_client.py      pit- token client, contact search, tag add/remove/retag
+  ghl_client.py      pit- token client: search, create, tag add/remove/retag, 429 retry
   dates.py           anchor/delay math, storno skip, email/phone extraction
   store.py           SQLite: poll cursor + review queue (idempotent)
   poller.py          detect new invoices → queue review records

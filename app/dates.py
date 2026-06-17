@@ -103,3 +103,18 @@ def extract_phone(document: dict) -> str | None:
         if phone:
             return str(phone).strip()
     return None
+
+
+def extract_name(document: dict) -> str | None:
+    """Pull the partner name, defensively.
+
+    Used only when the connector has to CREATE a missing GHL contact, so the
+    record isn't anonymous. Missing names are tolerated (GHL accepts a contact
+    with just email/phone).
+    """
+    for key in ("partner", "document_partner"):
+        node = document.get(key) or {}
+        name = node.get("name")
+        if name:
+            return str(name).strip()
+    return None

@@ -37,6 +37,7 @@ def make_cfg(**over):
         poll_interval_min=30,
         review_entry_tag="customer",
         retag_if_present=True,
+        create_contact_if_missing=True,
         timezone="Europe/Budapest",
     )
     base.update(over)

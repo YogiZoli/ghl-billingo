@@ -15,6 +15,7 @@ from .config import TenantConfig
 from .dates import (
     due_date,
     extract_email,
+    extract_name,
     extract_phone,
     is_triggering_document,
 )
@@ -64,8 +65,9 @@ def poll_once(
 
         email = extract_email(doc)
         phone = extract_phone(doc)
+        name = extract_name(doc)
         queued = store.enqueue_review(
-            cfg.ghl_location_id, doc_id, due, email, phone
+            cfg.ghl_location_id, doc_id, due, email, phone, name
         )
         if queued:
             result.queued += 1

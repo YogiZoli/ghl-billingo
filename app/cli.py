@@ -58,12 +58,49 @@ def cmd_gen_key(_: argparse.Namespace) -> int:
     return 0
 
 
+def _build_ghl(cfg):
+    from .ghl_client import GHLClient
+
+    return GHLClient(
+        cfg.ghl_pit_token,
+        cfg.ghl_location_id,
+        base_url=cfg.ghl_base_url,
+        api_version=cfg.ghl_api_version,
+    )
+
+
+def _with_ghl_overrides(cfg, ghl):
+    """Overlay the subaccount's GHL Custom Values onto cfg when reachable.
+
+    Falls back to the env config if the location has no token or the read
+    fails, so a misconfigured GHL never blocks a run silently-wrong.
+    """
+    from .ghl_config import apply_ghl_overrides
+
+    if not (cfg.ghl_pit_token and cfg.ghl_location_id):
+        return cfg
+    try:
+        values = ghl.get_location_custom_values()
+    except Exception as exc:  # pragma: no cover - network path
+        logging.getLogger("connector.cli").warning(
+            "could not read GHL custom values (%s); using env defaults", exc
+        )
+        return cfg
+    return apply_ghl_overrides(cfg, values)
+
+
 def cmd_poll(args: argparse.Namespace) -> int:
     from .billingo_client import BillingoClient
 
     cfg = load_tenant_config()
+    # The Billingo key + timing live as GHL Custom Values (LOCKED model).
+    cfg = _with_ghl_overrides(cfg, _build_ghl(cfg))
     if not cfg.billingo_api_key:
-        print("BILLINGO_API_KEY is empty — set it in .env first.", file=sys.stderr)
+        print(
+            "No Billingo key — set billingo_api_key as a GHL Custom Value "
+            "(or BILLINGO_API_KEY in .env). Subaccount treated as inactive.",
+            file=sys.stderr,
+        )
         return 2
     store = Store(os.getenv("DB_PATH", "data/connector.db"))
     client = BillingoClient(cfg.billingo_api_key, cfg.billingo_base_url)
@@ -73,16 +110,10 @@ def cmd_poll(args: argparse.Namespace) -> int:
 
 
 def cmd_run_scheduler(args: argparse.Namespace) -> int:
-    from .ghl_client import GHLClient
-
     cfg = load_tenant_config()
+    ghl = _build_ghl(cfg)
+    cfg = _with_ghl_overrides(cfg, ghl)
     store = Store(os.getenv("DB_PATH", "data/connector.db"))
-    ghl = GHLClient(
-        cfg.ghl_pit_token,
-        cfg.ghl_location_id,
-        base_url=cfg.ghl_base_url,
-        api_version=cfg.ghl_api_version,
-    )
     res = run_due_reviews(cfg, store, ghl, dry_run=False)
     print(res)
     return 0

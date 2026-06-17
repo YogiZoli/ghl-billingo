@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     invoice_id    INTEGER NOT NULL,
     email         TEXT,
     phone         TEXT,
+    name          TEXT,
     due_date      TEXT NOT NULL,          -- ISO YYYY-MM-DD
     status        TEXT NOT NULL DEFAULT 'pending',  -- pending|applied|skipped|error
     detail        TEXT,
@@ -46,7 +47,17 @@ class Store:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Forward-compatible column adds for DBs created by older versions."""
+        cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(review_queue)").fetchall()
+        }
+        if "name" not in cols:
+            self._conn.execute("ALTER TABLE review_queue ADD COLUMN name TEXT")
 
     @contextmanager
     def _tx(self):
@@ -85,6 +96,7 @@ class Store:
         due: date,
         email: str | None,
         phone: str | None,
+        name: str | None = None,
     ) -> bool:
         """Queue a review record. Returns False if the invoice was already
         queued (idempotent duplicate guard)."""
@@ -92,10 +104,10 @@ class Store:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO review_queue
-                    (location_id, invoice_id, email, phone, due_date)
-                VALUES (?, ?, ?, ?, ?)
+                    (location_id, invoice_id, email, phone, name, due_date)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (location_id, invoice_id, email, phone, due.isoformat()),
+                (location_id, invoice_id, email, phone, name, due.isoformat()),
             )
             return cur.rowcount > 0
 

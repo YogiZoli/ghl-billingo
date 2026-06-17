@@ -46,6 +46,7 @@ class TenantConfig:
     poll_interval_min: int
     review_entry_tag: str
     retag_if_present: bool
+    create_contact_if_missing: bool
     timezone: str
 
     def validate(self) -> None:
@@ -75,6 +76,9 @@ def load_tenant_config() -> TenantConfig:
         poll_interval_min=int(os.getenv("POLL_INTERVAL_MIN", "30")),
         review_entry_tag=os.getenv("REVIEW_ENTRY_TAG", "customer"),
         retag_if_present=_as_bool(os.getenv("RETAG_IF_PRESENT"), True),
+        create_contact_if_missing=_as_bool(
+            os.getenv("CREATE_CONTACT_IF_MISSING"), True
+        ),
         timezone=os.getenv("TIMEZONE", "Europe/Budapest"),
     )
     cfg.validate()
